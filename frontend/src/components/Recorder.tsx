@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, ShieldCheck, Scissors, Type, Camera, Square, Pause, Play, SwitchCamera, GripVertical, Check, X } from 'lucide-react';
+import { Mic, Type, Camera, Square, Pause, Play, SwitchCamera, GripVertical, Check, X } from 'lucide-react';
 import { Reorder } from 'framer-motion';
 import axios from 'axios';
 
@@ -10,27 +10,25 @@ interface RecorderProps {
   stopScreenShare: () => void;
   restartScreenShare: () => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
-  isRedacting: boolean;
-  onToggleRedact: () => void;
 }
 
-const DEFAULT_ORDER = ['switch', 'pause', 'blur', 'note', 'voice', 'capture', 'stop'];
+const DEFAULT_ORDER = ['switch', 'pause', 'note', 'voice', 'capture', 'stop'];
 
-export default function Recorder({ isSharing, stopScreenShare, restartScreenShare, videoRef, isRedacting, onToggleRedact }: RecorderProps) {
+export default function Recorder({ isSharing, stopScreenShare, restartScreenShare, videoRef }: RecorderProps) {
   
   const [items, setItems] = useState<string[]>(() => {
     const saved = localStorage.getItem('momento_widget_order');
     if (saved) {
-       const parsed = JSON.parse(saved);
-       if (!parsed.includes('pause')) return DEFAULT_ORDER;
-       return parsed;
+      const parsed = JSON.parse(saved);
+      const filtered = parsed.filter((i: string) => DEFAULT_ORDER.includes(i));
+      if (filtered.length === DEFAULT_ORDER.length) return filtered;
     }
     return DEFAULT_ORDER;
   });
 
   const [visibleCount, setVisibleCount] = useState<number>(() => {
     const saved = localStorage.getItem('momento_widget_visible_count');
-    return saved ? parseInt(saved) : 7;
+    return saved ? Math.min(parseInt(saved), 6) : 6;
   });
 
   const [isHovered, setIsHovered] = useState(false);
@@ -71,7 +69,9 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
     }
   }, [items, visibleCount, position]);
 
+  // --- BUTTERY SMOOTH DRAG LOGIC ---
   const onDragStart = (e: React.MouseEvent) => {
+    e.preventDefault(); 
     if (isNoteOpen) return; 
     dragRef.current = {
       isDragging: true,
@@ -87,6 +87,7 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
       if (dragRef.current.isDragging && widgetRef.current) {
         const dx = e.clientX - dragRef.current.startX;
         const dy = e.clientY - dragRef.current.startY;
+        // Direct DOM manipulation for 0ms lag
         widgetRef.current.style.left = `${dragRef.current.initialX + dx}px`;
         widgetRef.current.style.top = `${dragRef.current.initialY + dy}px`;
       }
@@ -124,50 +125,43 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
     };
   }, []);
 
-  useEffect(() => {
-    if (isRecordingVoice && analyserRef.current && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      const analyser = analyserRef.current;
-      
-      if (!ctx) return;
-      
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
+  const drawVisualizer = (analyser: AnalyserNode) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-      const draw = () => {
-        animationFrameRef.current = requestAnimationFrame(draw);
-        analyser.getByteFrequencyData(dataArray);
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = '#3B82F6'; 
-        ctx.beginPath();
+    const draw = () => {
+      animationFrameRef.current = requestAnimationFrame(draw);
+      analyser.getByteFrequencyData(dataArray);
 
-        const sliceWidth = canvas.width * 1.0 / bufferLength;
-        let x = 0;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#3B82F6'; 
+      ctx.beginPath();
 
-        for (let i = 0; i < bufferLength; i++) {
-          const v = dataArray[i] / 128.0;
-          const y = v * canvas.height / 2;
+      const sliceWidth = canvas.width * 1.0 / bufferLength;
+      let x = 0;
 
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+      for (let i = 0; i < bufferLength; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = v * canvas.height / 2;
 
-          x += sliceWidth;
-        }
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
 
-        ctx.lineTo(canvas.width, canvas.height / 2);
-        ctx.stroke();
-      };
+        x += sliceWidth;
+      }
 
-      draw();
-    }
-
-    return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      ctx.lineTo(canvas.width, canvas.height / 2);
+      ctx.stroke();
     };
-  }, [isRecordingVoice]);
+
+    draw();
+  };
 
   const captureMoment = () => {
     if (!videoRef.current) return;
@@ -178,12 +172,6 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
     e.preventDefault(); 
     e.currentTarget.blur(); 
     setIsPaused(!isPaused);
-  };
-
-  const handleToggleRedact = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    e.currentTarget.blur();
-    onToggleRedact();
   };
 
   const handleSaveNote = async () => {
@@ -212,12 +200,9 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
 
     if (isRecordingVoice) {
       mediaRecorderRef.current?.stop();
-      setIsRecordingVoice(false);
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     } else {
       try {
         const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
         let systemAudioTrack = null;
         if (videoRef.current && videoRef.current.srcObject) {
           const displayStream = videoRef.current.srcObject as MediaStream;
@@ -232,7 +217,6 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
         }
 
         const destination = audioContext.createMediaStreamDestination();
-
         const micSource = audioContext.createMediaStreamSource(micStream);
         micSource.connect(destination);
 
@@ -263,6 +247,15 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
           formData.append("timestamp", (Date.now() / 1000).toString());
           formData.append("session_id", "demo_session");
 
+          // Force reset state IMMEDIATELY
+          setIsRecordingVoice(false);
+          if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+          
+          // Stop hardware
+          micStream.getTracks().forEach(track => track.stop());
+          audioContext.close();
+
+          // Upload
           try {
             await axios.post(`${API_URL}/capture/voice`, formData, {
               headers: { 'Content-Type': 'multipart/form-data' }
@@ -270,16 +263,13 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
           } catch (err) {
             console.error("Failed to save voice note", err);
           }
-          
-          micStream.getTracks().forEach(track => track.stop());
-          audioContext.close();
         };
 
         mediaRecorder.start();
         setIsRecordingVoice(true);
       } catch (err) {
         console.error(err);
-        alert("Microphone access denied. Ensure you are using HTTPS or localhost.");
+        alert("Microphone access denied.");
       }
     }
   };
@@ -293,10 +283,8 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{ left: position.x, top: position.y }}
-      className={`fixed z-[9999] flex flex-col items-center pb-2 transition-all duration-300 ${
-        isHovered || isNoteOpen || isRecordingVoice 
-          ? 'opacity-100' 
-          : 'opacity-70'
+      className={`fixed z-[9999] flex flex-col items-center pb-2 transition-opacity duration-300 select-none ${
+        isHovered || isNoteOpen || isRecordingVoice ? 'opacity-100' : 'opacity-70'
       }`}
       ref={widgetRef}
     >
@@ -325,7 +313,7 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
             isHovered && !isRecordingVoice ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'
           }`}
         >
-          {Array.from({ length: 7 }).map((_, i) => {
+          {Array.from({ length: 6 }).map((_, i) => {
             const count = i + 1;
             return (
               <button
@@ -356,39 +344,23 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
             {visibleItems.map((item) => (
               <Reorder.Item key={item} value={item} className="cursor-grab active:cursor-grabbing">
                 {item === 'switch' && (
-                  <button title="Switch Source" onClick={restartScreenShare} className="p-1.5 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors">
+                  <button title="Switch Source" onClick={restartScreenShare} className="p-1.5 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors focus:outline-none">
                     <SwitchCamera className="w-4 h-4" />
                   </button>
                 )}
                 {item === 'pause' && (
-                  <button title={isPaused ? "Resume" : "Pause"} onClick={togglePause} className={`p-1.5 rounded-full transition-colors ${isPaused ? 'bg-gray-100 text-gray-500' : 'bg-orange-50 text-orange-600'}`}>
+                  <button title={isPaused ? "Resume" : "Pause"} onClick={togglePause} className={`p-1.5 rounded-full transition-colors focus:outline-none ${isPaused ? 'bg-gray-100 text-gray-500' : 'bg-orange-50 text-orange-600'}`}>
                     {isPaused ? <Play className="w-4 h-4 fill-current" /> : <Pause className="w-4 h-4 fill-current" />}
                   </button>
                 )}
-                
-                {item === 'blur' && (
-                  <button 
-                    title={isRedacting ? "Press Enter to confirm" : "Select area to blur"}
-                    onClick={handleToggleRedact} 
-                    className={`p-1.5 rounded-full transition-all border-2 flex items-center justify-center ${
-                      isRedacting 
-                        ? 'bg-green-600 border-white text-white shadow-md shadow-green-600/30' 
-                        : 'bg-white border-green-600 text-green-600 hover:bg-green-50'
-                    }`}
-                  >
-                    {isRedacting ? <Scissors className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
-                  </button>
-                )}
-
                 {item === 'note' && (
-                  <button title="Type a Note" onClick={() => setIsNoteOpen(true)} className="p-1.5 rounded-full bg-background text-textMuted hover:bg-gray-200 transition-colors">
+                  <button title="Type a Note" onClick={() => setIsNoteOpen(true)} className="p-1.5 rounded-full bg-background text-textMuted hover:bg-gray-200 transition-colors focus:outline-none">
                     <Type className="w-4 h-4" />
                   </button>
                 )}
-
                 {item === 'voice' && (
                   <div className="flex items-center">
-                    <button title={isRecordingVoice ? "Stop Voice Note" : "Record Voice Note"} onClick={toggleVoiceRecording} className={`p-1.5 rounded-full transition-all ${
+                    <button title={isRecordingVoice ? "Stop Voice Note" : "Record Voice Note"} onClick={toggleVoiceRecording} className={`p-1.5 rounded-full transition-all focus:outline-none ${
                         isRecordingVoice 
                           ? 'bg-red-500 text-white animate-pulse shadow-md shadow-red-500/30' 
                           : 'bg-purple-50 text-purple-600 hover:bg-purple-100'
@@ -406,14 +378,13 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
                     )}
                   </div>
                 )}
-
                 {item === 'capture' && (
-                  <button title="Capture Screen" onClick={captureMoment} className="p-1.5 rounded-full bg-primary text-white hover:bg-primaryHover shadow-sm transition-colors">
+                  <button title="Capture Screen" onClick={captureMoment} className="p-1.5 rounded-full bg-primary text-white hover:bg-primaryHover shadow-sm transition-colors focus:outline-none">
                     <Camera className="w-4 h-4" />
                   </button>
                 )}
                 {item === 'stop' && (
-                  <button title="Stop Sharing" onClick={stopScreenShare} className="p-1.5 rounded-full bg-red-50 text-red-500 hover:bg-red-100 transition-colors">
+                  <button title="Stop Sharing" onClick={stopScreenShare} className="p-1.5 rounded-full bg-red-50 text-red-500 hover:bg-red-100 transition-colors focus:outline-none">
                     <Square className="w-3 h-3 fill-current" />
                   </button>
                 )}
