@@ -11,6 +11,14 @@ interface SearchResult {
   metadata: { type: string; offset: number; session_id: string; image_url?: string };
 }
 
+const createSessionId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `session_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+};
+
 function App() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -18,33 +26,58 @@ function App() {
   const [notes, setNotes] = useState('');
   const [isDark, setIsDark] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
-  
-  // --- SESSION TRACKING ---
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
   const [sessionStartTime, setSessionStartTime] = useState<number>(0);
-  
+
   const pipWindowRef = useRef<Window | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const toggleDarkMode = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setIsDark(!isDark);
-    if (!isDark) document.documentElement.classList.add('dark');
-    else document.documentElement.classList.remove('dark');
+    setIsDark((current) => {
+      const next = !current;
+      if (next) document.documentElement.classList.add('dark');
+      else document.documentElement.classList.remove('dark');
+      return next;
+    });
+  };
+
+  const saveQuickNote = async () => {
+    const trimmedNote = notes.trim();
+    if (!trimmedNote) return;
+
+    const currentSessionId = sessionId || createSessionId();
+    setSessionId(currentSessionId);
+
+    try {
+      await axios.post(`${API_URL}/capture/note`, {
+        text: trimmedNote,
+        offset: 0,
+        session_id: currentSessionId,
+      });
+      setNotes('');
+    } catch (error) {
+      console.error('Failed to save quick note:', error);
+      alert('Failed to save quick note.');
+    }
   };
 
   const startRecording = async () => {
     try {
+      const nextSessionId = createSessionId();
+      setSessionId(nextSessionId);
+
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       streamRef.current = stream;
       setIsSharing(true);
-      
-      // Capture the start time
+
       const startTime = Date.now() / 1000;
       setSessionStartTime(startTime);
 
       if (!pipWindowRef.current) {
-        setTimeout(() => openFloatingWidget(startTime), 300);
+        setTimeout(() => openFloatingWidget(startTime, nextSessionId), 300);
       }
     } catch (err) {
       console.error('Screen share cancelled', err);
@@ -65,26 +98,33 @@ function App() {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
+
     if (videoRef.current) videoRef.current.srcObject = null;
     setIsSharing(false);
-    if (pipWindowRef.current) pipWindowRef.current.close();
+    setSessionId(null);
+
+    if (pipWindowRef.current) {
+      pipWindowRef.current.close();
+      pipWindowRef.current = null;
+    }
   };
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query) return;
     setLoading(true);
+
     try {
       const response = await axios.post(`${API_URL}/search`, { query });
       setResults(response.data.results);
     } catch (error) {
       console.error(error);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  // --- PiP LOGIC (This was the broken part) ---
-  const openFloatingWidget = async (startTime: number) => {
+  const openFloatingWidget = async (startTime: number, currentSessionId: string) => {
     if (pipWindowRef.current) return;
 
     const pipApi = (window as any).documentPictureInPicture;
@@ -94,11 +134,11 @@ function App() {
     }
 
     try {
-      const pipWin = await pipApi.requestWindow({ 
-        width: 380, 
-        height: 120, // Increased height for the note input
-        top: 20, 
-        left: 20 
+      const pipWin = await pipApi.requestWindow({
+        width: 380,
+        height: 120,
+        top: 20,
+        left: 20,
       });
       pipWindowRef.current = pipWin;
 
@@ -107,7 +147,6 @@ function App() {
       pipWin.document.body.style.background = 'transparent';
       pipWin.document.body.style.overflow = 'hidden';
       pipWin.document.documentElement.style.background = 'transparent';
-
       pipWin.document.body.style.display = 'flex';
       pipWin.document.body.style.alignItems = 'center';
       pipWin.document.body.style.justifyContent = 'center';
@@ -123,6 +162,7 @@ function App() {
           restartScreenShare={startRecording}
           videoRef={videoRef}
           sessionStartTime={startTime}
+          sessionId={currentSessionId}
         />
       );
 
@@ -167,7 +207,7 @@ function App() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder='e.g., "Where did I figure out the auth bug?"'
-              className="w-full bg-background border border-borderSoft rounded-xl px-4 py-3 text-sm text-textMain placeholder-textMuted focus:outline-none mb-4 dark:bg-darkBackground dark:text-darkTextMain dark:placeholder-darkTextMuted dark:border-darkBorderSoft"
+              className="w-full bg-background border border-borderSoft rounded-xl px-4 py-3 text-sm text-textMain placeholder-textMuted focus:outline-none mb-4 dark:bg-darkBackground dark:text-darkTextMain dark:placeholder-darkTextMuted"
             />
             <button
               type="submit"
@@ -183,7 +223,7 @@ function App() {
           <div className="space-y-4">
             {results.map((result, index) => (
               <div
-                key={index}
+                key={`${result.metadata.type}-${result.metadata.offset}-${index}`}
                 className="bg-card p-5 rounded-xl border border-borderSoft dark:bg-darkCard dark:border-darkBorderSoft relative group transition-all"
               >
                 <div className="flex items-center gap-2 mb-3 text-sm text-textMuted dark:text-darkTextMuted">
@@ -216,9 +256,18 @@ function App() {
             </div>
 
             <div className="bg-background rounded-2xl p-4 border border-borderSoft dark:bg-darkBackground dark:border-darkBorderSoft">
-              <div className="flex items-center gap-2 mb-3 text-textMuted dark:text-darkTextMuted">
-                <PenLine className="w-4 h-4" />
-                <span className="text-sm font-medium">Type a quick note</span>
+              <div className="flex items-center justify-between gap-2 mb-3 text-textMuted dark:text-darkTextMuted">
+                <div className="flex items-center gap-2">
+                  <PenLine className="w-4 h-4" />
+                  <span className="text-sm font-medium">Type a quick note</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={saveQuickNote}
+                  className="text-xs font-medium text-primary hover:text-primaryHover"
+                >
+                  Save note
+                </button>
               </div>
               <textarea
                 value={notes}
