@@ -1,0 +1,33 @@
+name: Keploy API Tests
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        cd backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Install Keploy
+      run: |
+        curl --silent -O -L https://keploy.io/install.sh && source install.sh
+        
+    - name: Run Keploy Tests
+      run: |
+        cd backend
+        export GROQ_API_KEY="sk-dummy-key-for-testing"
+        keploy test -c "python -m uvicorn main:app --host 0.0.0.0 --port 8000" --delay 10
