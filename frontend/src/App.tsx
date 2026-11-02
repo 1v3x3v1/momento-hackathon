@@ -8,7 +8,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface SearchResult {
   text: string;
-  metadata: { type: string; timestamp: number; session_id: string; image_url?: string };
+  metadata: { type: string; offset: number; session_id: string; image_url?: string };
 }
 
 function App() {
@@ -19,13 +19,15 @@ function App() {
   const [isDark, setIsDark] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   
-  const [isPiPActive, setIsPiPActive] = useState(false);
+  // --- SESSION TRACKING ---
+  const [sessionStartTime, setSessionStartTime] = useState<number>(0);
+  
   const pipWindowRef = useRef<Window | null>(null);
-
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  const toggleDarkMode = () => {
+  const toggleDarkMode = (e: React.MouseEvent) => {
+    e.stopPropagation();
     setIsDark(!isDark);
     if (!isDark) document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
@@ -37,9 +39,13 @@ function App() {
       streamRef.current = stream;
       setIsSharing(true);
       
-      // Auto-open PiP after state is set
-      setTimeout(() => openPiP(), 500);
+      // Capture the start time
+      const startTime = Date.now() / 1000;
+      setSessionStartTime(startTime);
 
+      if (!pipWindowRef.current) {
+        setTimeout(() => openFloatingWidget(startTime), 300);
+      }
     } catch (err) {
       console.error('Screen share cancelled', err);
     }
@@ -61,9 +67,7 @@ function App() {
     }
     if (videoRef.current) videoRef.current.srcObject = null;
     setIsSharing(false);
-    if (pipWindowRef.current) {
-      pipWindowRef.current.close();
-    }
+    if (pipWindowRef.current) pipWindowRef.current.close();
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -79,76 +83,56 @@ function App() {
     setLoading(false);
   };
 
-  const openPiP = async () => {
-    if (!('documentPictureInPicture' in window)) {
-      alert("Your browser does not support Picture-in-Picture. Please use Chrome or Edge.");
+  // --- PiP LOGIC (This was the broken part) ---
+  const openFloatingWidget = async (startTime: number) => {
+    if (pipWindowRef.current) return;
+
+    const pipApi = (window as any).documentPictureInPicture;
+    if (!pipApi) {
+      alert('PiP is not supported. Please use Chrome or Edge.');
       return;
     }
 
     try {
-      const pipWindow = await (window as any).documentPictureInPicture.requestWindow({
-        width: 450,
-        height: 120,
+      const pipWin = await pipApi.requestWindow({ 
+        width: 380, 
+        height: 120, // Increased height for the note input
+        top: 20, 
+        left: 20 
       });
+      pipWindowRef.current = pipWin;
 
-      // 1. Copy existing Tailwind styles (if possible)
-      const styleSheets = Array.from(document.styleSheets);
-      styleSheets.forEach((styleSheet) => {
-        try {
-          const cssRules = Array.from(styleSheet.cssRules).map(rule => rule.cssText).join('');
-          const style = document.createElement('style');
-          style.textContent = cssRules;
-          pipWindow.document.head.appendChild(style);
-        } catch (e) {
-          console.warn("Could not copy stylesheet", e);
-        }
-      });
+      pipWin.document.body.innerHTML = '';
+      pipWin.document.body.style.margin = '0';
+      pipWin.document.body.style.background = 'transparent';
+      pipWin.document.body.style.overflow = 'hidden';
+      pipWin.document.documentElement.style.background = 'transparent';
 
-      // 2. FORCE FALLBACK STYLES (This is the fix)
-      const forceStyle = pipWindow.document.createElement('style');
-      forceStyle.textContent = `
-        body { 
-          background-color: #111827 !important; 
-          margin: 0; 
-          display: flex; 
-          align-items: center; 
-          justify-content: center; 
-          height: 100vh; 
-          overflow: hidden;
-        }
-        .bg-card\\/90 { background-color: rgba(31, 41, 55, 0.9) !important; border: 1px solid #374151 !important; }
-        .bg-card\\/95 { background-color: rgba(31, 41, 55, 0.95) !important; border: 1px solid #374151 !important; }
-        .bg-gray-50 { background-color: #1F2937 !important; }
-        .text-textMuted { color: #9CA3AF !important; }
-        .border-borderSoft { border-color: #374151 !important; }
-      `;
-      pipWindow.document.head.appendChild(forceStyle);
+      pipWin.document.body.style.display = 'flex';
+      pipWin.document.body.style.alignItems = 'center';
+      pipWin.document.body.style.justifyContent = 'center';
 
-      // 3. Render the widget
-      const container = pipWindow.document.createElement('div');
-      pipWindow.document.body.appendChild(container);
-      
-      const root = ReactDOM.createRoot(container);
-      
-      // Force isSharing to TRUE so it doesn't return null
+      const rootNode = pipWin.document.createElement('div');
+      pipWin.document.body.appendChild(rootNode);
+
+      const root = ReactDOM.createRoot(rootNode);
       root.render(
         <Recorder
           isSharing={true}
           stopScreenShare={stopRecording}
           restartScreenShare={startRecording}
           videoRef={videoRef}
+          sessionStartTime={startTime}
         />
       );
 
-      setIsPiPActive(true);
-      pipWindowRef.current = pipWindow;
-
-      pipWindow.addEventListener('pagehide', () => {
-        setIsPiPActive(false);
+      pipWin.addEventListener('pagehide', () => {
+        root.unmount();
         pipWindowRef.current = null;
+        stopRecording();
       });
-    } catch (err) {
-      console.error("Failed to open PiP", err);
+    } catch (error) {
+      console.error('PiP failed', error);
     }
   };
 
@@ -156,7 +140,7 @@ function App() {
     <div className="min-h-screen p-6 md:p-12 relative select-none">
       <button
         onClick={toggleDarkMode}
-        className="absolute top-6 right-6 p-2 rounded-full bg-card border border-borderSoft shadow-sm hover:bg-gray-50 dark:bg-darkCard dark:border-darkBorderSoft"
+        className="absolute top-6 right-6 p-2 rounded-full bg-card border border-borderSoft shadow-sm hover:bg-gray-50 dark:bg-darkCard dark:border-darkBorderSoft z-50"
       >
         {isDark ? <Sun className="w-5 h-5 text-yellow-500" /> : <Moon className="w-5 h-5 text-textMuted" />}
       </button>
@@ -205,7 +189,7 @@ function App() {
                 <div className="flex items-center gap-2 mb-3 text-sm text-textMuted dark:text-darkTextMuted">
                   <span className="capitalize font-medium">{result.metadata.type} Capture</span>
                   <span>•</span>
-                  <span>{new Date(result.metadata.timestamp * 1000).toLocaleTimeString()}</span>
+                  <span>⏱ {Math.floor(result.metadata.offset)}s</span>
                 </div>
 
                 <div className="text-sm text-textMain dark:text-darkTextMain mb-4 leading-relaxed">

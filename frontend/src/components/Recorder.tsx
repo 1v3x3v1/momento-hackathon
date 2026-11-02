@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, Type, Camera, Square, Pause, Play, SwitchCamera, GripVertical, Check, X } from 'lucide-react';
-import { Reorder } from 'framer-motion';
+import { Mic, Type, Camera, Square, Pause, Play, SwitchCamera, Check, X } from 'lucide-react';
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -10,199 +9,107 @@ interface RecorderProps {
   stopScreenShare: () => void;
   restartScreenShare: () => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  sessionStartTime: number;
 }
 
-const DEFAULT_ORDER = ['switch', 'pause', 'note', 'voice', 'capture', 'stop'];
-
-export default function Recorder({ isSharing, stopScreenShare, restartScreenShare, videoRef }: RecorderProps) {
+export default function Recorder({ 
+  isSharing, 
+  stopScreenShare, 
+  restartScreenShare, 
+  videoRef,
+  sessionStartTime 
+}: RecorderProps) {
   
-  const [items, setItems] = useState<string[]>(() => {
-    const saved = localStorage.getItem('momento_widget_order');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      const filtered = parsed.filter((i: string) => DEFAULT_ORDER.includes(i));
-      if (filtered.length === DEFAULT_ORDER.length) return filtered;
-    }
-    return DEFAULT_ORDER;
-  });
-
-  const [visibleCount, setVisibleCount] = useState<number>(() => {
-    const saved = localStorage.getItem('momento_widget_visible_count');
-    return saved ? Math.min(parseInt(saved), 6) : 6;
-  });
-
-  const [isHovered, setIsHovered] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-
   const [isNoteOpen, setIsNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [isSavingNote, setIsSavingNote] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
 
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
-  
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
 
-  const [position, setPosition] = useState(() => {
-    const saved = localStorage.getItem('momento_widget_position');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.x > 0 && parsed.y > 0 && parsed.x < window.innerWidth - 100 && parsed.y < window.innerHeight - 100) {
-        return parsed;
-      }
-    }
-    return { x: window.innerWidth - 450, y: window.innerHeight - 120 };
-  });
-  
-  const widgetRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef({ isDragging: false, startX: 0, startY: 0, initialX: 0, initialY: 0 });
-
-  useEffect(() => {
-    localStorage.setItem('momento_widget_order', JSON.stringify(items));
-    localStorage.setItem('momento_widget_visible_count', visibleCount.toString());
-    if (!dragRef.current.isDragging) {
-      localStorage.setItem('momento_widget_position', JSON.stringify(position));
-    }
-  }, [items, visibleCount, position]);
-
-  // --- BUTTERY SMOOTH DRAG LOGIC ---
-  const onDragStart = (e: React.MouseEvent) => {
-    e.preventDefault(); 
-    if (isNoteOpen) return; 
-    dragRef.current = {
-      isDragging: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      initialX: widgetRef.current?.offsetLeft || position.x,
-      initialY: widgetRef.current?.offsetTop || position.y
-    };
-  };
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (dragRef.current.isDragging && widgetRef.current) {
-        const dx = e.clientX - dragRef.current.startX;
-        const dy = e.clientY - dragRef.current.startY;
-        // Direct DOM manipulation for 0ms lag
-        widgetRef.current.style.left = `${dragRef.current.initialX + dx}px`;
-        widgetRef.current.style.top = `${dragRef.current.initialY + dy}px`;
-      }
-    };
-
-    const onMouseUp = () => {
-      if (dragRef.current.isDragging) {
-        dragRef.current.isDragging = false;
-        setPosition({
-          x: widgetRef.current?.offsetLeft || position.x,
-          y: widgetRef.current?.offsetTop || position.y
-        });
-      }
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-  }, [position]);
-
-  useEffect(() => {
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-        mediaRecorderRef.current.stop();
-      }
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-    };
-  }, []);
-
-  const drawVisualizer = (analyser: AnalyserNode) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
-    const draw = () => {
-      animationFrameRef.current = requestAnimationFrame(draw);
-      analyser.getByteFrequencyData(dataArray);
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#3B82F6'; 
-      ctx.beginPath();
-
-      const sliceWidth = canvas.width * 1.0 / bufferLength;
-      let x = 0;
-
-      for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = v * canvas.height / 2;
-
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-
-        x += sliceWidth;
-      }
-
-      ctx.lineTo(canvas.width, canvas.height / 2);
-      ctx.stroke();
-    };
-
-    draw();
-  };
-
-  const captureMoment = () => {
-    if (!videoRef.current) return;
-    console.log("Camera clicked! Ready to capture frame.");
-  };
-
-  const togglePause = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault(); 
-    e.currentTarget.blur(); 
+  const togglePause = (e: React.MouseEvent) => {
+    e.stopPropagation();
     setIsPaused(!isPaused);
   };
 
-  const handleSaveNote = async () => {
+  // --- SCREEN CAPTURE LOGIC ---
+  const captureMoment = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!videoRef.current) return;
+    
+    setIsCapturing(true);
+    
+    try {
+      const video = videoRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const base64Image = canvas.toDataURL('image/jpeg', 0.6);
+        
+        const currentTime = Date.now() / 1000;
+        const offset = currentTime - sessionStartTime;
+
+        await axios.post(`${API_URL}/capture/screen`, {
+          image_base64: base64Image,
+          offset: offset,
+          session_id: "demo_session"
+        });
+        console.log("Screen captured and saved!");
+      }
+    } catch (err) {
+      console.error("Failed to capture screen:", err);
+      alert("Failed to capture screen. Check the console.");
+    }
+    
+    setIsCapturing(false);
+  };
+
+  // --- NOTE SAVE LOGIC ---
+  const handleSaveNote = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     if (!noteText.trim()) {
       setIsNoteOpen(false);
       return;
     }
     setIsSavingNote(true);
     try {
+      const currentTime = Date.now() / 1000;
+      const offset = currentTime - sessionStartTime;
+
       await axios.post(`${API_URL}/capture/note`, {
         text: noteText,
-        timestamp: Date.now() / 1000,
+        offset: offset,
         session_id: "demo_session"
       });
       setNoteText('');
       setIsNoteOpen(false);
     } catch (err) {
       console.error("Failed to save note", err);
+      alert("Failed to save note. Check the console for details.");
     }
     setIsSavingNote(false);
   };
 
-  const toggleVoiceRecording = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    e.currentTarget.blur();
-
+  // --- VOICE RECORDING LOGIC ---
+  const toggleVoiceRecording = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (isRecordingVoice) {
       mediaRecorderRef.current?.stop();
     } else {
       try {
         const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
         let systemAudioTrack = null;
         if (videoRef.current && videoRef.current.srcObject) {
           const displayStream = videoRef.current.srcObject as MediaStream;
@@ -225,10 +132,14 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
             systemSource.connect(destination);
         }
 
+        const combinedStream = new MediaStream();
+        micStream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
+        if (systemAudioTrack) combinedStream.addTrack(systemAudioTrack);
+        
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 64;
-        const micAnalyserSource = audioContext.createMediaStreamSource(micStream);
-        micAnalyserSource.connect(analyser);
+        const combinedSource = audioContext.createMediaStreamSource(combinedStream);
+        combinedSource.connect(analyser);
         analyserRef.current = analyser;
 
         const mixedStream = destination.stream;
@@ -244,18 +155,19 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
           const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
           const formData = new FormData();
           formData.append("audio", audioBlob, "voice_note.webm");
-          formData.append("timestamp", (Date.now() / 1000).toString());
+          
+          // Calculate offset for the voice note
+          const currentTime = Date.now() / 1000;
+          const offset = currentTime - sessionStartTime;
+          
+          formData.append("offset", offset.toString());
           formData.append("session_id", "demo_session");
 
-          // Force reset state IMMEDIATELY
           setIsRecordingVoice(false);
           if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-          
-          // Stop hardware
           micStream.getTracks().forEach(track => track.stop());
           audioContext.close();
 
-          // Upload
           try {
             await axios.post(`${API_URL}/capture/voice`, formData, {
               headers: { 'Content-Type': 'multipart/form-data' }
@@ -267,6 +179,34 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
 
         mediaRecorder.start();
         setIsRecordingVoice(true);
+
+        const draw = () => {
+          animationFrameRef.current = requestAnimationFrame(draw);
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          const bufferLength = analyser.frequencyBinCount;
+          const dataArray = new Uint8Array(bufferLength);
+          analyser.getByteFrequencyData(dataArray);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#3B82F6'; 
+          ctx.beginPath();
+          const sliceWidth = canvas.width * 1.0 / bufferLength;
+          let x = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = v * canvas.height / 2;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            x += sliceWidth;
+          }
+          ctx.lineTo(canvas.width, canvas.height / 2);
+          ctx.stroke();
+        };
+        draw();
+
       } catch (err) {
         console.error(err);
         alert("Microphone access denied.");
@@ -276,123 +216,57 @@ export default function Recorder({ isSharing, stopScreenShare, restartScreenShar
 
   if (!isSharing) return null;
 
-  const visibleItems = items.slice(0, visibleCount);
+  const bgColor = '#111827';
+  const borderColor = 'rgba(255,255,255,0.15)';
+  const textColor = '#FFFFFF';
 
   return (
-    <div 
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{ left: position.x, top: position.y }}
-      className={`fixed z-[9999] flex flex-col items-center pb-2 transition-opacity duration-300 select-none ${
-        isHovered || isNoteOpen || isRecordingVoice ? 'opacity-100' : 'opacity-70'
-      }`}
-      ref={widgetRef}
-    >
-      {isNoteOpen ? (
-        <div className="mb-2 animate-in slide-in-from-bottom-2 w-[280px] flex items-center bg-card/95 backdrop-blur-md border border-borderSoft dark:bg-darkCard/95 dark:border-darkBorderSoft px-2 py-1.5 rounded-full shadow-lg">
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+      
+      {isNoteOpen && (
+        <div style={{
+          display: 'flex', alignItems: 'center', background: bgColor, borderRadius: '12px', border: `1px solid ${borderColor}`, padding: '4px 8px', width: 'fit-content'
+        }}>
           <input
-            autoFocus
-            type="text"
-            value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
+            autoFocus type="text" value={noteText} onChange={(e) => setNoteText(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleSaveNote(); if (e.key === 'Escape') setIsNoteOpen(false); }}
-            placeholder="Type note and press Enter..."
-            className="flex-1 bg-transparent border-none text-sm text-textMain placeholder-textMuted focus:outline-none px-2"
+            placeholder="Type note..."
+            style={{ background: 'transparent', border: 'none', color: textColor, outline: 'none', width: '160px', fontSize: '13px' }}
             disabled={isSavingNote}
           />
-          <button onClick={handleSaveNote} disabled={isSavingNote} className="p-1 text-green-600 hover:bg-green-50 rounded-full transition-colors">
-            <Check className="w-4 h-4" />
+          <button onClick={handleSaveNote} disabled={isSavingNote} style={{ background: 'none', border: 'none', color: '#10B981', cursor: 'pointer', padding: '2px' }}>
+            <Check size={16} />
           </button>
-          <button onClick={() => setIsNoteOpen(false)} className="p-1 text-red-500 hover:bg-red-50 rounded-full transition-colors">
-            <X className="w-4 h-4" />
+          <button onClick={(e) => { e.stopPropagation(); setIsNoteOpen(false); }} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '2px' }}>
+            <X size={16} />
           </button>
-        </div>
-      ) : (
-        <div 
-          className={`mb-2 transition-all duration-300 flex items-center gap-1.5 bg-card/95 backdrop-blur-md border border-borderSoft dark:bg-darkCard/95 dark:border-darkBorderSoft px-3 py-2 rounded-xl shadow-lg ${
-            isHovered && !isRecordingVoice ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'
-          }`}
-        >
-          {Array.from({ length: 6 }).map((_, i) => {
-            const count = i + 1;
-            return (
-              <button
-                key={count}
-                onClick={() => setVisibleCount(count)}
-                className={`w-3 h-3 rounded-full transition-all border-2 ${
-                  visibleCount === count 
-                    ? 'bg-primary border-primary scale-125' 
-                    : 'bg-transparent border-gray-300 hover:border-primary dark:border-gray-600'
-                }`}
-              />
-            );
-          })}
         </div>
       )}
 
-      <div className="flex items-center bg-card/90 backdrop-blur-md dark:bg-darkCard/90 border border-borderSoft dark:border-darkBorderSoft shadow-xl rounded-full p-0.5">
-        
-        <div 
-          onMouseDown={onDragStart}
-          className="cursor-grab active:cursor-grabbing bg-gray-50 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 px-2 py-3 rounded-l-full flex items-center justify-center transition-colors border-r border-borderSoft dark:border-darkBorderSoft shrink-0"
-        >
-          <GripVertical className="w-4 h-4 text-textMuted" />
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center', background: bgColor, borderRadius: '20px', border: `1px solid ${borderColor}`, padding: '6px 12px', gap: '8px'
+      }}>
+        <button onClick={(e) => { e.stopPropagation(); restartScreenShare(); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '34px', height: '34px', borderRadius: '50%', border: 'none', background: 'rgba(59, 130, 246, 0.15)', color: '#3B82F6', cursor: 'pointer' }}>
+          <SwitchCamera size={16} />
+        </button>
+        <button onClick={togglePause} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '34px', height: '34px', borderRadius: '50%', border: 'none', background: isPaused ? 'rgba(107, 114, 128, 0.2)' : 'rgba(249, 115, 22, 0.15)', color: isPaused ? '#9CA3AF' : '#F97316', cursor: 'pointer' }}>
+          {isPaused ? <Play size={16} /> : <Pause size={16} />}
+        </button>
+        <button onClick={(e) => { e.stopPropagation(); setIsNoteOpen(true); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '34px', height: '34px', borderRadius: '50%', border: 'none', background: 'rgba(107, 114, 128, 0.15)', color: '#D1D5DB', cursor: 'pointer' }}>
+          <Type size={16} />
+        </button>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <button onClick={toggleVoiceRecording} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '34px', height: '34px', borderRadius: '50%', border: 'none', background: isRecordingVoice ? '#EF4444' : 'rgba(168, 85, 247, 0.15)', color: isRecordingVoice ? 'white' : '#A855F7', cursor: 'pointer' }}>
+            <Mic size={16} />
+          </button>
+          {isRecordingVoice && <canvas ref={canvasRef} width="24" height="18" style={{ marginLeft: '4px' }} />}
         </div>
-
-        <div className="flex items-center px-1.5">
-          <Reorder.Group axis="x" values={items} onReorder={setItems} className="flex items-center gap-1" dragListener={false}>
-            {visibleItems.map((item) => (
-              <Reorder.Item key={item} value={item} className="cursor-grab active:cursor-grabbing">
-                {item === 'switch' && (
-                  <button title="Switch Source" onClick={restartScreenShare} className="p-1.5 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors focus:outline-none">
-                    <SwitchCamera className="w-4 h-4" />
-                  </button>
-                )}
-                {item === 'pause' && (
-                  <button title={isPaused ? "Resume" : "Pause"} onClick={togglePause} className={`p-1.5 rounded-full transition-colors focus:outline-none ${isPaused ? 'bg-gray-100 text-gray-500' : 'bg-orange-50 text-orange-600'}`}>
-                    {isPaused ? <Play className="w-4 h-4 fill-current" /> : <Pause className="w-4 h-4 fill-current" />}
-                  </button>
-                )}
-                {item === 'note' && (
-                  <button title="Type a Note" onClick={() => setIsNoteOpen(true)} className="p-1.5 rounded-full bg-background text-textMuted hover:bg-gray-200 transition-colors focus:outline-none">
-                    <Type className="w-4 h-4" />
-                  </button>
-                )}
-                {item === 'voice' && (
-                  <div className="flex items-center">
-                    <button title={isRecordingVoice ? "Stop Voice Note" : "Record Voice Note"} onClick={toggleVoiceRecording} className={`p-1.5 rounded-full transition-all focus:outline-none ${
-                        isRecordingVoice 
-                          ? 'bg-red-500 text-white animate-pulse shadow-md shadow-red-500/30' 
-                          : 'bg-purple-50 text-purple-600 hover:bg-purple-100'
-                      }`}>
-                      <Mic className="w-4 h-4" />
-                    </button>
-                    
-                    {isRecordingVoice && (
-                      <canvas 
-                        ref={canvasRef} 
-                        width="40" 
-                        height="24" 
-                        className="ml-1 block"
-                      />
-                    )}
-                  </div>
-                )}
-                {item === 'capture' && (
-                  <button title="Capture Screen" onClick={captureMoment} className="p-1.5 rounded-full bg-primary text-white hover:bg-primaryHover shadow-sm transition-colors focus:outline-none">
-                    <Camera className="w-4 h-4" />
-                  </button>
-                )}
-                {item === 'stop' && (
-                  <button title="Stop Sharing" onClick={stopScreenShare} className="p-1.5 rounded-full bg-red-50 text-red-500 hover:bg-red-100 transition-colors focus:outline-none">
-                    <Square className="w-3 h-3 fill-current" />
-                  </button>
-                )}
-              </Reorder.Item>
-            ))}
-          </Reorder.Group>
-        </div>
-
+        <button onClick={captureMoment} disabled={isCapturing} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '34px', height: '34px', borderRadius: '50%', border: 'none', background: isCapturing ? 'rgba(107, 114, 128, 0.5)' : '#1A5D4A', color: 'white', cursor: 'pointer' }}>
+          <Camera size={16} />
+        </button>
+        <button onClick={(e) => { e.stopPropagation(); stopScreenShare(); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '34px', height: '34px', borderRadius: '50%', border: 'none', background: 'rgba(239, 68, 68, 0.15)', color: '#EF4444', cursor: 'pointer' }}>
+          <Square size={14} fill="#EF4444" />
+        </button>
       </div>
     </div>
   );
